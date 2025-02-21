@@ -96,11 +96,16 @@ Thanks to [MulimgViewer](https://github.com/nachifur/MulimgViewer) for the suppo
 ## Citation
 If you find this work useful for your research, please consider citing:
 ```
-@article{shi2023resfusion,
-  title={Resfusion: Denoising Diffusion Probabilistic Models for Image Restoration Based on Prior Residual Noise},
-  author={Shi, Zhenning and Zheng, Haoshuai and Xu, Chen and Dong, Changsheng and Pan, Bin and Xie, Xueshuo and He, Along and Li, Tao and Fu, Huazhu},
-  journal={arXiv preprint arXiv:2311.14900},
-  year={2023}
+@inproceedings{NEURIPS2024_ebc62a3a,
+ author = {Shi, Zhenning and zheng, haoshuai and Xu, Chen and Dong, Changsheng and Pan, Bin and xueshuo, Xie and He, Along and Li, Tao and Fu, Huazhu},
+ booktitle = {Advances in Neural Information Processing Systems},
+ editor = {A. Globerson and L. Mackey and D. Belgrave and A. Fan and U. Paquet and J. Tomczak and C. Zhang},
+ pages = {130664--130693},
+ publisher = {Curran Associates, Inc.},
+ title = {Resfusion: Denoising Diffusion Probabilistic Models for Image Restoration Based on Prior Residual Noise},
+ url = {https://proceedings.neurips.cc/paper_files/paper/2024/file/ebc62a3af9342eb4ebc728e5c5bc4cca-Paper-Conference.pdf},
+ volume = {37},
+ year = {2024}
 }
 ```
 
