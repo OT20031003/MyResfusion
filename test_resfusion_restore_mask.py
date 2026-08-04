@@ -10,7 +10,7 @@ import torch
 
 
 def main(args):
-    # 设定随机种子以及一些因素，用来控制实验结果
+    # 実験結果を再現できるように、乱数シードと関連設定を固定する
     if args.set_float32_matmul_precision_high:
         torch.set_float32_matmul_precision('high')
     if args.set_float32_matmul_precision_medium:
@@ -18,14 +18,14 @@ def main(args):
 
     pl.seed_everything(args.seed, workers=True)
 
-    # 数据集的选择
+    # マスク付き復元に使用するデータセットを構築する
     if args.dataset == 'ISTD':
         data_module = ISTD_DataModule(root_dir=args.data_dir, batch_size=args.batch_size, pin_mem=args.pin_mem,
                                       num_workers=args.num_workers)
     else:
         raise ValueError("Wrong dataset type !!!")
 
-    # 噪声调度器的选择
+    # 拡散過程で使用するノイズスケジューラを選択する
     if args.noise_schedule == 'LinearPro':
         variance_scheduler = LinearProScheduler(T=args.T)
     elif args.noise_schedule == 'CosinePro':
@@ -33,7 +33,7 @@ def main(args):
     else:
         raise ValueError("Wrong variance scheduler type !!!")
 
-    # 去噪模型的选择
+    # 復元に使用するノイズ除去モデルを選択する
     if args.denoising_model == 'RDDM_Unet':
         denoising_model = RDDM_Unet(
             dim=args.dim,

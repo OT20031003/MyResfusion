@@ -63,10 +63,10 @@ test_transform = A.Compose([
 class LOLDataset(Dataset):
     def __init__(self, root_dir, subset="our485", transform=None):
         """
-        初始化函数
-        :param root_dir: 数据集的根目录
-        :param subset: 使用的数据子集 ('our485', 'eval15')
-        :param transform: 应用于数据的转换
+        初期化処理。
+        :param root_dir: データセットのルートディレクトリ
+        :param subset: 使用するサブセット（'our485' または 'eval15'）
+        :param transform: データに適用する変換
         """
         self.root_dir = root_dir
         self.subset = subset
@@ -87,10 +87,10 @@ class LOLDataset(Dataset):
         img_name = self.img_names[idx]
         img_path = os.path.join(self.img_dir, img_name)
         gt_path = os.path.join(self.gt_dir, img_name)
-        # 读取图像
+        # 低照度の入力画像と正解画像を読み込む
         image = Image.open(img_path).convert("RGB")
         gt = Image.open(gt_path).convert("RGB")
-        # 将PIL图像转换为NumPy数组
+        # PIL画像をNumPy配列に変換する
         image = np.array(image)
         gt = np.array(gt)
         if self.transform:
@@ -111,7 +111,7 @@ class LOLDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
 
     '''
-    setup 方法创建Dataset对象，对不同数据集指定预处理方法
+    setup メソッドでDatasetオブジェクトを作成し、ステージごとの前処理を指定する
     '''
 
     def setup(self, stage: str):
@@ -125,7 +125,7 @@ class LOLDataModule(pl.LightningDataModule):
         if stage == "test":
             self.test_dataset = LOLDataset(root_dir=self.root_dir, subset="eval15", transform=test_transform)
 
-    # 以下方法创建不同阶段的数据加载器
+    # 以下のメソッドで各ステージのデータローダを作成する
     def train_dataloader(self):
         return torch.utils.data.DataLoader(self.train_dataset, shuffle=True, drop_last=True,
                                            batch_size=self.batch_size, pin_memory=self.pin_mem,
@@ -154,7 +154,7 @@ class LOLDataModule(pl.LightningDataModule):
 #     input_medium2 = augmented['image']
 #     target_medium2 = augmented['gt_image']
 #
-#     # 展示图像和掩码
+#     # 入力画像と正解画像を表示する
 #     visualize(input_medium, target_medium, original_image=input, original_gt=target)
 #     plt.show()
 #

@@ -21,13 +21,13 @@ def get_timestep_embedding(timesteps, embedding_dim):
     emb = emb.to(device=timesteps.device)
     emb = timesteps.float()[:, None] * emb[None, :]
     emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1)
-    if embedding_dim % 2 == 1:  # zero pad
+    if embedding_dim % 2 == 1:  # 埋め込み次元が奇数なら末尾を0で埋める
         emb = torch.nn.functional.pad(emb, (0, 1, 0, 0))
     return emb
 
 
 def nonlinearity(x):
-    # swish
+    # Swish活性化関数を計算する
     return x * torch.sigmoid(x)
 
 
@@ -59,7 +59,7 @@ class Downsample(nn.Module):
         super().__init__()
         self.with_conv = with_conv
         if self.with_conv:
-            # no asymmetric padding in torch conv, must do it ourselves
+            # PyTorchの畳み込みは非対称パディングに対応しないため、事前に補完する
             self.conv = torch.nn.Conv2d(in_channels,
                                         in_channels,
                                         kernel_size=3,
@@ -170,19 +170,19 @@ class AttnBlock(nn.Module):
         k = self.k(h_)
         v = self.v(h_)
 
-        # compute attention
+        # QueryとKeyの類似度からAttention重みを計算する
         b, c, h, w = q.shape
         q = q.reshape(b, c, h * w)
-        q = q.permute(0, 2, 1)  # b,hw,c
-        k = k.reshape(b, c, h * w)  # b,c,hw
-        w_ = torch.bmm(q, k)  # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
+        q = q.permute(0, 2, 1)  # 形状: バッチ、画素、チャネル
+        k = k.reshape(b, c, h * w)  # 形状: バッチ、チャネル、画素
+        w_ = torch.bmm(q, k)  # 全画素ペア間の類似度を計算する
         w_ = w_ * (int(c) ** (-0.5))
         w_ = torch.nn.functional.softmax(w_, dim=2)
 
-        # attend to values
+        # Attention重みをValueに適用する
         v = v.reshape(b, c, h * w)
-        w_ = w_.permute(0, 2, 1)  # b,hw,hw (first hw of k, second of q)
-        # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
+        w_ = w_.permute(0, 2, 1)  # Key側とQuery側の画素軸を入れ替える
+        # Valueを加重和し、各Query画素に対応する特徴を作る
         h_ = torch.bmm(v, w_)
         h_ = h_.reshape(b, c, h, w)
 
@@ -192,6 +192,7 @@ class AttnBlock(nn.Module):
 
 
 class DDIM_Unet(pl.LightningModule):
+    """DDIMのノイズ予測に使う、時刻条件付きU-Net。"""
     def __init__(self, image_size=32, in_channels=3, out_ch=3, ch=128, ch_mult=(1, 2, 2, 2),
                  num_res_blocks=2, attn_resolutions=(16,), dropout=0.1, resamp_with_conv=True,
                  input_condition=False,
@@ -201,9 +202,9 @@ class DDIM_Unet(pl.LightningModule):
                  ):
         super().__init__()
 
-        # origin input condition
+        # 元画像を条件入力として使用するかを保持する
         self.input_condition = input_condition
-        # mask condition for ISTD dataset
+        # ISTDの影マスクを条件入力として使用するかを保持する
         self.mask_condition = mask_condition
 
         ch, out_ch, ch_mult = ch, out_ch, ch_mult
@@ -223,7 +224,7 @@ class DDIM_Unet(pl.LightningModule):
         self.resolution = resolution
         self.in_channels = in_channels
 
-        # timestep embedding
+        # 拡散時刻をResNetブロック用の特徴量に変換する
         self.temb = nn.Module()
         self.temb.dense = nn.ModuleList([
             torch.nn.Linear(self.ch,
@@ -232,7 +233,7 @@ class DDIM_Unet(pl.LightningModule):
                             self.temb_ch),
         ])
 
-        # downsampling
+        # Encoder: ResNetブロックとAttentionで特徴を抽出し、解像度を下げる
         self.conv_in = torch.nn.Conv2d(in_channels,
                                        self.ch,
                                        kernel_size=3,
@@ -264,7 +265,7 @@ class DDIM_Unet(pl.LightningModule):
                 curr_res = curr_res // 2
             self.down.append(down)
 
-        # middle
+        # ボトルネック: 最小解像度で大域的な特徴を処理する
         self.mid = nn.Module()
         self.mid.block_1 = ResnetBlock(in_channels=block_in,
                                        out_channels=block_in,
@@ -276,7 +277,7 @@ class DDIM_Unet(pl.LightningModule):
                                        temb_channels=self.temb_ch,
                                        dropout=dropout)
 
-        # upsampling
+        # Decoder: Encoderの特徴と連結しながら解像度を戻す
         self.up = nn.ModuleList()
         for i_level in reversed(range(self.num_resolutions)):
             block = nn.ModuleList()
@@ -299,9 +300,9 @@ class DDIM_Unet(pl.LightningModule):
             if i_level != 0:
                 up.upsample = Upsample(block_in, resamp_with_conv)
                 curr_res = curr_res * 2
-            self.up.insert(0, up)  # prepend to get consistent order
+            self.up.insert(0, up)  # Encoderと対応する順序に合わせるため先頭へ追加する
 
-        # end
+        # 出力層: 正規化後の特徴を指定チャネル数の画像へ変換する
         self.norm_out = Normalize(block_in)
         self.conv_out = torch.nn.Conv2d(block_in,
                                         out_ch,
@@ -310,7 +311,7 @@ class DDIM_Unet(pl.LightningModule):
                                         padding=1)
 
     def forward(self, x, time, input_cond=None, mask_cond=None):
-        # assert x.shape[2] == x.shape[3] == self.resolution
+        # 必要な場合は、入力が設定した正方形解像度か検査できる
 
         if self.input_condition:
             x = torch.cat((x, input_cond), dim=1)
@@ -318,13 +319,13 @@ class DDIM_Unet(pl.LightningModule):
         if self.mask_condition:
             x = torch.cat((x, mask_cond), dim=1)
 
-        # timestep embedding
+        # 入力された拡散時刻の埋め込みを作る
         temb = get_timestep_embedding(time, self.ch)
         temb = self.temb.dense[0](temb)
         temb = nonlinearity(temb)
         temb = self.temb.dense[1](temb)
 
-        # downsampling
+        # Encoderの中間特徴をhsに保存し、後のスキップ接続に使う
         hs = [self.conv_in(x)]
         for i_level in range(self.num_resolutions):
             for i_block in range(self.num_res_blocks):
@@ -335,13 +336,13 @@ class DDIM_Unet(pl.LightningModule):
             if i_level != self.num_resolutions - 1:
                 hs.append(self.down[i_level].downsample(hs[-1]))
 
-        # middle
+        # ボトルネックで特徴を変換する
         h = hs[-1]
         h = self.mid.block_1(h, temb)
         h = self.mid.attn_1(h)
         h = self.mid.block_2(h, temb)
 
-        # upsampling
+        # hsから同じ解像度の特徴を取り出し、Decoder特徴と連結する
         for i_level in reversed(range(self.num_resolutions)):
             for i_block in range(self.num_res_blocks + 1):
                 h = self.up[i_level].block[i_block](
@@ -351,7 +352,7 @@ class DDIM_Unet(pl.LightningModule):
             if i_level != 0:
                 h = self.up[i_level].upsample(h)
 
-        # end
+        # 復元した特徴を最終出力画像に変換する
         h = self.norm_out(h)
         h = nonlinearity(h)
         h = self.conv_out(h)

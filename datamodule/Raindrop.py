@@ -53,10 +53,10 @@ test_transform = A.Compose([
 class RaindropDataset(Dataset):
     def __init__(self, root_dir, subset="train", transform=None):
         """
-        初始化函数
-        :param root_dir: 数据集的根目录
-        :param subset: 使用的数据子集 ('train', 'test_a')
-        :param transform: 应用于数据的转换
+        初期化処理。
+        :param root_dir: データセットのルートディレクトリ
+        :param subset: 使用するサブセット（'train' または 'test_a'）
+        :param transform: データに適用する変換
         """
         self.root_dir = root_dir
         self.subset = subset
@@ -78,7 +78,7 @@ class RaindropDataset(Dataset):
         gt_name = img_name.split('_')[0] + '_clean.png'
         img_path = os.path.join(self.img_dir, img_name)
         gt_path = os.path.join(self.gt_dir, gt_name)
-        # 读取图像
+        # 雨滴付きの入力画像と正解画像を読み込む
         image = Image.open(img_path).convert("RGB")
         gt = Image.open(gt_path).convert("RGB")
         # Resizing images to multiples of 16 for whole-image restoration
@@ -93,7 +93,7 @@ class RaindropDataset(Dataset):
         ht_new = int(16 * np.ceil(ht_new / 16.0))
         image = image.resize((wd_new, ht_new))
         gt = gt.resize((wd_new, ht_new))
-        # 将PIL图像转换为NumPy数组
+        # PIL画像をNumPy配列に変換する
         image = np.array(image)
         gt = np.array(gt)
         if self.transform:
@@ -114,7 +114,7 @@ class RaindropDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
 
     '''
-    setup 方法创建Dataset对象，对不同数据集指定预处理方法
+    setup メソッドでDatasetオブジェクトを作成し、ステージごとの前処理を指定する
     '''
 
     def setup(self, stage: str):
@@ -128,7 +128,7 @@ class RaindropDataModule(pl.LightningDataModule):
         if stage == "test":
             self.test_dataset = RaindropDataset(root_dir=self.root_dir, subset="test_a", transform=test_transform)
 
-    # 以下方法创建不同阶段的数据加载器
+    # 以下のメソッドで各ステージのデータローダを作成する
     def train_dataloader(self):
         return torch.utils.data.DataLoader(self.train_dataset, shuffle=True, drop_last=True,
                                            batch_size=self.batch_size, pin_memory=self.pin_mem,
@@ -151,6 +151,6 @@ class RaindropDataModule(pl.LightningDataModule):
 #     my_dataset = RainDropDataset(root_dir='../../datasets/Raindrop')
 #     input, target = my_dataset.__getitem__(0)
 #
-#     # 展示图像和掩码
+#     # 入力画像と正解画像を表示する
 #     visualize(input, target)
 #     plt.show()

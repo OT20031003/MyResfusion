@@ -1,0 +1,5 @@
+resfusion_restore_train/*
+resfusion_generate_train/*
+datasets/*
+
+*.pyc

@@ -52,7 +52,7 @@ class LinearProScheduler(Scheduler):
         #     self._alpha[i] = self._alpha_hat[i] / self._alpha_hat[i - 1]
         # self._beta = 1.0 - self._alpha
 
-        # 找到sqrt_alpha_hat第一个比0.5小的，如果差大于0.01则把它变为0.5并截断
+        # sqrt_alpha_hat が初めて 0.5 を下回る位置を探し、差が 0.01 より大きければ 0.5 に補正して以降を切り捨てる
         self._sqrt_alpha_hat = torch.sqrt(self._alpha_hat)
         idx = find_closest_index(self._sqrt_alpha_hat, 0.5)
         if 0.5 - self._sqrt_alpha_hat[idx].item() > 0.01:
@@ -111,5 +111,4 @@ if __name__ == '__main__':
     plt.xlabel('t')
     plt.show()
     print(len(sqrt_alpha_hat))
-
 

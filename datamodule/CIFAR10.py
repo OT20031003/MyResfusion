@@ -41,7 +41,7 @@ class CIFAR10_DataModule(pl.LightningDataModule):
         self.num_workers = num_workers
 
     '''
-    setup 方法创建Dataset对象，对不同数据集指定预处理方法
+    setup メソッドでDatasetオブジェクトを作成し、学習・検証・テストごとの前処理を指定する
     '''
 
     def setup(self, stage: str):
@@ -56,7 +56,7 @@ class CIFAR10_DataModule(pl.LightningDataModule):
         if stage == "test":
             self.test_dataset = CIFAR10_Dataset(self.root_dir, train=True, transform=test_transform)
 
-    # 以下方法创建不同阶段的数据加载器
+    # 以下のメソッドで各ステージのデータローダを作成する
     def train_dataloader(self):
         return DataLoader(self.train_dataset, shuffle=True, drop_last=True,
                           batch_size=self.batch_size, pin_memory=self.pin_mem,

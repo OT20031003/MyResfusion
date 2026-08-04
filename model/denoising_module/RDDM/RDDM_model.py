@@ -7,6 +7,7 @@ import pytorch_lightning as pl
 
 
 class RDDM_Unet(pl.LightningModule):
+    """ResNetブロックとAttentionを用いた、拡散モデル用のU-Net。"""
     def __init__(
             self,
             dim,
@@ -22,12 +23,12 @@ class RDDM_Unet(pl.LightningModule):
     ):
         super().__init__()
 
-        # origin input condition
+        # 元画像を条件入力として使用するかを保持する
         self.input_condition = input_condition
-        # mask condition for ISTD dataset
+        # ISTDの影マスクを条件入力として使用するかを保持する
         self.mask_condition = mask_condition
 
-        # determine dimensions
+        # ノイズ画像に条件画像・マスクを連結した入力チャネル数を決める
         input_channels = channels + input_condition_channels * \
                          (1 if self.input_condition else 0) + mask_condition_channels * \
                          (1 if self.mask_condition else 0)
@@ -40,7 +41,7 @@ class RDDM_Unet(pl.LightningModule):
 
         block_klass = partial(ResnetBlock, groups=resnet_block_groups)
 
-        # time embeddings
+        # 拡散時刻を各ResNetブロックに与える埋め込みに変換する
 
         time_dim = dim * 4
 
@@ -54,12 +55,13 @@ class RDDM_Unet(pl.LightningModule):
             nn.Linear(time_dim, time_dim)
         )
 
-        # layers
+        # Encoder（縮小経路）とDecoder（拡大経路）を格納する
 
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
         num_resolutions = len(in_out)
 
+        # Encoderの各段: ResNet×2→Linear Attention→ダウンサンプリング
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= (num_resolutions - 1)
 
@@ -71,11 +73,13 @@ class RDDM_Unet(pl.LightningModule):
                     dim_in, dim_out, 3, padding=1)
             ]))
 
+        # U-Netのボトルネックで、最小解像度の特徴を変換する
         mid_dim = dims[-1]
         self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
         self.mid_attn = Residual(PreNorm(mid_dim, Attention(mid_dim)))
         self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim=time_dim)
 
+        # Decoderの各段: Encoderの特徴を連結して徐々に解像度を戻す
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = ind == (len(in_out) - 1)
 
@@ -94,17 +98,20 @@ class RDDM_Unet(pl.LightningModule):
         self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
 
     def forward(self, x, time, input_cond=None, mask_cond=None):
+        # 有効な条件入力をチャネル方向に連結する
         if self.input_condition:
             x = torch.cat((x, input_cond), dim=1)
 
         if self.mask_condition:
             x = torch.cat((x, mask_cond), dim=1)
 
+        # 初期特徴rはU-Netの最終段でスキップ接続する
         x = self.init_conv(x)
         r = x.clone()
 
         t = self.time_mlp(time)
 
+        # Encoderの中間特徴を保存し、Decoderのスキップ接続に使う
         h = []
 
         for block1, block2, attn, downsample in self.downs:
@@ -117,10 +124,12 @@ class RDDM_Unet(pl.LightningModule):
 
             x = downsample(x)
 
+        # ボトルネックで大域的な特徴を処理する
         x = self.mid_block1(x, t)
         x = self.mid_attn(x)
         x = self.mid_block2(x, t)
 
+        # 保存済みの特徴を後ろから取り出し、同じ解像度のDecoder特徴と連結する
         for block1, block2, attn, upsample in self.ups:
             x = torch.cat((x, h.pop()), dim=1)
             x = block1(x, t)
@@ -131,6 +140,7 @@ class RDDM_Unet(pl.LightningModule):
 
             x = upsample(x)
 
+        # 最初の畳み込み特徴も連結し、細かな入力情報を出力まで残す
         x = torch.cat((x, r), dim=1)
 
         x = self.final_res_block(x, t)
