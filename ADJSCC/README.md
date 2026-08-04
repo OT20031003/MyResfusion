@@ -119,9 +119,9 @@ TensorFlow tensorとPyTorch tensorの値はDLPackで変換できますが、Tens
 
 Resfusionの`datamodule/Raindrop.py`はPyTorchの`Dataset`を返すため、TensorFlow/KerasのADJSCCに直接渡すことはできません。次節で、画像選択と前処理を合わせたTensorFlow用アダプタを作成します。
 
-### 3. TensorFlow用Raindropデータローダの作成
+### 3. TensorFlow用Raindropデータローダ
 
-`dataset/dataset_raindrop.py`を新規作成します。学習前処理はResfusionの`datamodule/Raindrop.py`と同じ方針にします。
+`dataset/dataset_raindrop.py`に実装済みです。学習前処理はResfusionの`datamodule/Raindrop.py`と同じ方針です。
 
 1. RGBでGT画像を読む
 2. 長辺が1024を超える場合は長辺を1024に縮小する
@@ -131,7 +131,7 @@ Resfusionの`datamodule/Raindrop.py`はPyTorchの`Dataset`を返すため、Tens
 6. 各サンプルのSNRを`[-10, 20] dB`の連続一様分布から生成する
 7. `((gt_image, snr_db), gt_image)`をKerasに返す
 
-最小構成は次のようにします。
+主要部分は次の構成です。実行時はリポジトリ内の実装済みファイルが使われます。
 
 ```python
 from pathlib import Path
@@ -184,9 +184,9 @@ def get_train_dataset(root_dir, snr_low=-10.0, snr_high=20.0):
 
 `tf.random.uniform`の上限は含まれないため、厳密には`-10 <= SNR < 20`です。20 dBを評価点として含めることには問題ありません。整数SNRだけを使う場合は`tf.random.uniform([1], -10, 21, dtype=tf.int32)`を`float32`へcastしますが、ADJSCCの適応学習では連続値を推奨します。
 
-### 4. Raindrop用学習スクリプトの作成
+### 4. Raindrop用学習・評価スクリプト
 
-`adjscc_imagenet.py`を`adjscc_raindrop.py`へコピーし、次を変更します。
+`adjscc_raindrop.py`に実装済みです。`train`と`eval`の2つのcommandを持ち、次のモデル構成を使います。
 
 ```python
 from dataset import dataset_raindrop
@@ -206,7 +206,7 @@ model = Model(inputs=[input_imgs, input_snrdb], outputs=output_imgs)
 model.compile(Adam(args.learning_rate), loss="mse")
 ```
 
-学習データの作成部分を次のようにします。
+学習データは内部で次のように作られます。
 
 ```python
 train_ds, train_num = dataset_raindrop.get_train_dataset(
@@ -220,7 +220,7 @@ steps_per_epoch = train_num // args.batch_size
 model.fit(train_ds, epochs=args.epochs, steps_per_epoch=steps_per_epoch, callbacks=[checkpoint])
 ```
 
-引数にはデータセットの場所を追加します。
+データセットとSNRの引数は実装済みで、デフォルトは次の値です。
 
 ```python
 parser.add_argument("--data_dir", default="../../datasets/Raindrop")
@@ -245,10 +245,12 @@ mkdir -p model loss eval
 
 python adjscc_raindrop.py train \
   --data_dir ../../datasets/Raindrop \
+  --val_dir ../../datasets/Raindrop/val \
   --channel_type awgn \
   --snr_low_train=-10 \
   --snr_up_train=20 \
-  --batch_size 4 \
+  --val_snr_db=10 \
+  --batch_size 8 \
   --epochs 500 \
   --learning_rate 0.0001 \
   --transmit_channel_num 16 \
@@ -260,6 +262,8 @@ python adjscc_raindrop.py train \
 
 学習中、各画像には`-10〜20 dB`から独立に選ばれたSNRが与えられます。1つの固定SNRで学習するのではありません。Attention Feature Moduleにも同じSNRが入力されるため、EncoderとDecoderは通信路品質に応じた特徴表現を学習します。
 
+`--val_dir`で指定したフォルダ直下の画像は学習データに混ぜず、毎エポックの終了時にPSNRを計算します。`--val_dir`を省略した場合は`<data_dir>/val`を使います。検証画像はランダム拡張せず中央`256×256`を使い、SNRは`--val_snr_db`で固定します。デフォルトは`10 dB`です。コンソールに`val_psnr`が表示され、`loss/*.csv`にエポックごとの`loss`、`psnr`、`val_loss`、`val_psnr`が保存されます。checkpointは`val_psnr`が更新されたときに保存されます。
+
 VRAM不足の場合は`--batch_size 2`または`--batch_size 1`へ下げます。データ読み込みがボトルネックになる場合は、`../datasets`をWSLのLinux filesystemへ置くと`/mnt/d`より高速になる場合があります。
 
 ### 6. 保存される成果物
@@ -267,38 +271,53 @@ VRAM不足の場合は`--batch_size 2`または`--batch_size 1`へ下げます�
 推奨ファイル名は、実験条件が分かるように次の形式にします。
 
 ```text
-model/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs4_lr0.0001.weights.h5
+model/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs4_lr0.0001.h5
 loss/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs4_lr0.0001.json
+loss/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs4_lr0.0001.csv
 ```
 
-チェックポイントは`val_loss`を使う場合は検証損失が改善した時、学習データだけを使う場合は`loss`が改善した時に保存します。再開時は`--load_model_path`に`.weights.h5`を指定します。
+チェックポイントは`val_psnr`がこれまでの最高値を更新した時に保存します。CSVは毎エポック追記されるため、学習の途中でもPSNR推移を確認できます。再開時は`--load_model_path`に`.h5`を指定します。
+
+checkpointの拡張子は必ず`.h5`にします。`.weights.h5`はKerasの新しい保存形式を選択し、この環境ではTensorFlow CompressionのSignalConv/GDN重みが欠落するため使用しません。
 
 ```bash
 python adjscc_raindrop.py train \
   --data_dir ../../datasets/Raindrop \
   --snr_low_train=-10 \
   --snr_up_train=20 \
-  --load_model_path model/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs4_lr0.0001.weights.h5
+  --load_model_path model/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs4_lr0.0001.h5
 ```
 
 ### 7. SNR別の評価
 
-評価には`test_a/gt`だけを使用し、`-10, -9, ..., 20 dB`の各点でMSEとPSNRを計算します。評価時にはランダムクロップや左右反転を適用せず、GT画像全体をResfusionと同じ規則で最大1024・16の倍数へ調整します。画像サイズが異なるため、全体画像の評価は`batch_size=1`にします。
+評価には`test_a/gt`だけを使用し、`-10, -9, ..., 20 dB`の各点でMSEとPSNRを計算します。各GT画像をResfusionと同じ規則で最大1024・16の倍数へ調整した後、画像中央の`256×256`を切り出してADJSCCへ入力します。ランダムクロップや左右反転は適用しません。
 
-評価用モデルは全体画像を受け取れるように`Input(shape=(None, None, 3))`で構築します。畳み込み層の重みは空間サイズに依存しないため、`256×256`で学習した重みを読み込めます。
+評価用モデルも学習時と同じ`Input(shape=(256, 256, 3))`で構築します。保存される再構成PNGも`256×256`です。
 
 ```bash
 python adjscc_raindrop.py eval \
   --data_dir ../../datasets/Raindrop \
   --channel_type awgn \
-  --snr_low_eval=-10 \
+  --snr_low_eval=10 \
   --snr_up_eval=20 \
   --batch_size 1 \
-  --load_model_path model/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs4_lr0.0001.weights.h5 \
+  --load_model_path model/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs8_lr0.0001.h5 \
+  --eval_repeats 3 \
+  --save_images \
   --eval_dir eval/
 ```
 
-AWGNは実行ごとに変わるため、各SNRで複数回推論し、PSNRの平均と標準偏差を記録してください。
+AWGNは実行ごとに変わるため、各SNRで複数回推論し、PSNRの平均と標準偏差を記録します。`--save_images`を指定すると、各SNRの1回目の再構成画像をPNGで保存します。
+
+```text
+eval/reconstructed/
+└── adjscc_raindrop_...weights/
+    ├── snr_-10dB/
+    │   ├── 0_clean.png
+    │   └── ...
+    ├── snr_+0dB/
+    └── snr_+20dB/
+```
 
 ### 8. 実行前チェック
 

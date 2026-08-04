@@ -4,3 +4,5 @@ datasets/*
 
 *.pyc
 resfusion_restore_test
+ADJSCC/eval/*
+ADJSCC/model/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs8_lr0.0001.h5
