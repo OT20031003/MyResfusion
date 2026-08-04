@@ -3,3 +3,4 @@ resfusion_generate_train/*
 datasets/*
 
 *.pyc
+resfusion_restore_test
