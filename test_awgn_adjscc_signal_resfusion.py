@@ -1,4 +1,8 @@
-"""物理AWGNをResfusion開始noiseの一部として利用する潜在信号テスト。"""
+"""物理AWGNをResfusion開始noiseの一部として利用する潜在信号テスト。
+
+注意: このnoise-completion初期化は、学習時に独立生成するchannel AWGNと
+diffusion noiseの分布とは完全には同一でない。既存評価方式を維持している。
+"""
 
 import argparse
 import csv
@@ -81,7 +85,8 @@ def channel_noise_aware_initialization(
 
 
 def inverse_resfusion_from_initial(
-    model, initial_state: torch.Tensor, received_condition: torch.Tensor
+    model, initial_state: torch.Tensor, received_condition: torch.Tensor,
+    channel_snr_db: float,
 ) -> torch.Tensor:
     """指定したu_T'とyからepsilon予測Resfusionの逆拡散だけを実行する。"""
     if model.mode != "epsilon":
@@ -96,7 +101,11 @@ def inverse_resfusion_from_initial(
             (state.shape[0],), t, dtype=torch.long, device=state.device
         )
         predicted_resnoise = model.denoising_module(
-            x=state, time=time, input_cond=received_condition
+            x=state, time=time, input_cond=received_condition,
+            channel_snr_db=torch.full(
+                (state.shape[0],), channel_snr_db,
+                device=state.device, dtype=state.dtype,
+            ),
         )
         noise = torch.zeros_like(state) if t == 0 else torch.randn_like(state)
         state = (
@@ -157,8 +166,8 @@ def main(args) -> None:
         raise ValueError("FID計算には2枚以上の画像が必要です")
     output_dir = Path(args.output_dir).expanduser()
     reconstructed_dir = output_dir / "awgn_noise_completion"
-    direct_low_dir = output_dir / "no_resfusion_low_decoder"
-    direct_high_dir = output_dir / "no_resfusion_high_decoder"
+    direct_low_dir = output_dir / "awgn_no_resfusion_low_decoder"
+    direct_high_dir = output_dir / "awgn_no_resfusion_high_decoder"
     actual_channel_dir = output_dir / "actual_channel_adjscc"
     for directory in (
         reconstructed_dir, direct_low_dir, direct_high_dir, actual_channel_dir
@@ -178,9 +187,10 @@ def main(args) -> None:
             )
         )
 
-        # 先のテストと同じチャネルなし・Resfusionなしの2ベースライン。
-        direct_low = codec.decode(transmitted, low_snr)[0]
-        direct_high = codec.decode(transmitted, high_snr)[0]
+        # Resfusionなしの2経路にも提案法と同じAWGN受信信号yを入力する。
+        # AWGN後のreceivedには再電力正規化・clampを適用しない。
+        direct_low = codec.decode(received, low_snr)[0]
+        direct_high = codec.decode(received, high_snr)[0]
 
         # Actual-channel baseline:
         # Encoder(condition=gamma_ch) -> AWGN(gamma_ch) -> Decoder(condition=gamma_ch)。
@@ -200,7 +210,7 @@ def main(args) -> None:
         initial_model = to_model_domain(initial, latent_min, latent_scale, device)
         with torch.inference_mode():
             predicted_model = inverse_resfusion_from_initial(
-                model, initial_model, received_model
+                model, initial_model, received_model, args.channel_snr_db
             )
         predicted01 = (predicted_model + 1.0) / 2.0
         predicted_raw = predicted01 * latent_scale + latent_min
@@ -233,8 +243,8 @@ def main(args) -> None:
         ))
         print(
             f"[{index + 1}/{len(paths)}] {path.name}: "
-            f"proposed={proposed_score:.3f}, low->low={direct_low_score:.3f}, "
-            f"low->high={direct_high_score:.3f}, "
+            f"proposed={proposed_score:.3f}, AWGN low->low={direct_low_score:.3f}, "
+            f"AWGN low->high={direct_high_score:.3f}, "
             f"actual-channel={actual_channel_score:.3f} dB"
         )
 
@@ -243,15 +253,15 @@ def main(args) -> None:
         writer.writerow((
             "input",
             "proposed_image", "proposed_psnr_db",
-            "no_resfusion_low_image", "no_resfusion_low_psnr_db",
-            "no_resfusion_high_image", "no_resfusion_high_psnr_db",
+            "awgn_no_resfusion_low_image", "awgn_no_resfusion_low_psnr_db",
+            "awgn_no_resfusion_high_image", "awgn_no_resfusion_high_psnr_db",
             "actual_channel_image", "actual_channel_psnr_db",
         ))
         writer.writerows(rows)
     routes = (
         ("awgn_noise_completion", reconstructed_dir, float(np.mean([row[2] for row in rows])), channel_std, additional_std),
-        ("no_resfusion_low", direct_low_dir, float(np.mean([row[4] for row in rows])), 0.0, 0.0),
-        ("no_resfusion_high", direct_high_dir, float(np.mean([row[6] for row in rows])), 0.0, 0.0),
+        ("awgn_no_resfusion_low", direct_low_dir, float(np.mean([row[4] for row in rows])), channel_std, 0.0),
+        ("awgn_no_resfusion_high", direct_high_dir, float(np.mean([row[6] for row in rows])), channel_std, 0.0),
         ("actual_channel_adjscc", actual_channel_dir, float(np.mean([row[8] for row in rows])), channel_std, 0.0),
     )
     metrics_device = torch.device(args.metrics_device)

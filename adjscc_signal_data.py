@@ -12,7 +12,39 @@ from torch.utils.data import Dataset
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp"}
-SIGNAL_PROCESSING_VERSION = "power_normalized_no_awgn_v1"
+SIGNAL_PROCESSING_VERSION = "power_normalized_no_awgn_with_images_v2"
+MINIMUM_CHANNEL_SNR_DB = -4.0
+
+
+def model_domain(signal: torch.Tensor, latent_min: float, latent_max: float) -> torch.Tensor:
+    """固定cache統計量でraw信号を[-1, 1]座標へ写像する（clipしない）。"""
+    return 2.0 * (signal.float() - latent_min) / (latent_max - latent_min) - 1.0
+
+
+def add_channel_awgn(
+    s_low: torch.Tensor, channel_snr_db: torch.Tensor,
+    generator: Optional[torch.Generator] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """電力正規化済み実数表現へ、複素AWGNを加える。
+
+    Args:
+        s_low: 送信前の物理信号 [C,H,W]。前半/後半が複素信号の実部/虚部。
+        channel_snr_db: scalar tensor、単位dB。
+    Returns:
+        (y, eps_channel): ともに[C,H,W]。yへの再正規化・clampは行わない。
+    """
+    if s_low.ndim != 3:
+        raise ValueError(f"s_lowはCHW形式にしてください: shape={tuple(s_low.shape)}")
+    if not torch.isfinite(channel_snr_db) or channel_snr_db < MINIMUM_CHANNEL_SNR_DB:
+        raise ValueError(f"channel SNRは{MINIMUM_CHANNEL_SNR_DB:g} dB以上にしてください")
+    # 複素標準Gaussian E[|eps|^2]=1 なので、各実数成分の分散は1/2。
+    eps_channel = torch.randn(
+        s_low.shape, dtype=s_low.dtype, device=s_low.device, generator=generator
+    ) / np.sqrt(2.0)
+    sigma_channel = torch.pow(
+        channel_snr_db.new_tensor(10.0), -channel_snr_db / 20.0
+    )
+    return s_low + sigma_channel * eps_channel, eps_channel
 
 
 def list_images(directory: str) -> List[Path]:
@@ -86,7 +118,7 @@ def build_pair_cache(
     samples: List[Tuple[Path, int]] = [
         (path, crop_index) for path in paths for crop_index in range(crops_per_image)
     ]
-    low_batches, high_batches, names = [], [], []
+    low_batches, high_batches, image_batches, names = [], [], [], []
     for start in range(0, len(samples), batch_size):
         current = samples[start : start + batch_size]
         images = np.stack(
@@ -97,6 +129,8 @@ def build_pair_cache(
         # PyTorch側の畳み込みに合わせてNHWCからNCHWへ変換する。
         low_batches.append(torch.from_numpy(np.transpose(low, (0, 3, 1, 2))).half())
         high_batches.append(torch.from_numpy(np.transpose(high, (0, 3, 1, 2))).half())
+        # validation時の画像PSNR計算用。crop済みRGBをuint8 NHWCで保持する。
+        image_batches.append(torch.from_numpy(np.rint(images).astype(np.uint8)))
         names.extend(f"{path.name}#crop{index}" for path, index in current)
         print(f"信号ペア作成: {min(start + len(current), len(samples))}/{len(samples)}", flush=True)
 
@@ -118,13 +152,16 @@ def build_pair_cache(
     }
     destination = Path(output_path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"low": low_tensor, "high": high_tensor, "names": names, "metadata": metadata}, destination)
+    torch.save({
+        "low": low_tensor, "high": high_tensor,
+        "images": torch.cat(image_batches), "names": names, "metadata": metadata,
+    }, destination)
     print(f"信号ペアを保存しました: {destination}")
 
 
 def load_cache(path: str) -> Dict:
     cache = torch.load(Path(path).expanduser(), map_location="cpu")
-    required = {"low", "high", "names", "metadata"}
+    required = {"low", "high", "images", "names", "metadata"}
     if not required.issubset(cache):
         raise RuntimeError(f"不正な信号cacheです（不足: {required - set(cache)}）: {path}")
     return cache
@@ -156,6 +193,63 @@ class SignalPairDataset(Dataset):
         low = ((self.low[index].float() - self.latent_min) / self.scale).clamp(0.0, 1.0)
         high = ((self.high[index].float() - self.latent_min) / self.scale).clamp(0.0, 1.0)
         return low, high
+
+
+class AWGNSignalPairDataset(Dataset):
+    """独立な通信路AWGNを加え、ADJSCC専用batch dictを返す。"""
+
+    def __init__(
+        self, cache: Dict, latent_min: float, latent_max: float,
+        channel_snr_min_db: float, channel_snr_max_db: float,
+        deterministic_seed: Optional[int] = None,
+    ) -> None:
+        if latent_max <= latent_min:
+            raise ValueError("latent_maxはlatent_minより大きくしてください")
+        if channel_snr_min_db < MINIMUM_CHANNEL_SNR_DB:
+            raise ValueError(f"channel_snr_min_dbは{MINIMUM_CHANNEL_SNR_DB:g} dB以上にしてください")
+        if channel_snr_max_db < channel_snr_min_db:
+            raise ValueError("channel_snr_max_dbはchannel_snr_min_db以上にしてください")
+        self.low = cache["low"]
+        self.high = cache["high"]
+        self.images = cache["images"]
+        self.latent_min = float(latent_min)
+        self.latent_max = float(latent_max)
+        self.channel_snr_min_db = float(channel_snr_min_db)
+        self.channel_snr_max_db = float(channel_snr_max_db)
+        self.deterministic_seed = deterministic_seed
+
+    def __len__(self) -> int:
+        return len(self.low)
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        # raw_s_*はADJSCC Encoderですでに送信電力正規化済み [C,H,W]。
+        raw_s_low = self.low[index].float()
+        raw_s_high = self.high[index].float()
+        generator = None
+        if self.deterministic_seed is not None:
+            generator = torch.Generator().manual_seed(self.deterministic_seed + index)
+        if raw_s_low.ndim != 3 or raw_s_low.shape != raw_s_high.shape:
+            raise RuntimeError("cache信号は同一shapeのCHW tensorである必要があります")
+        if self.channel_snr_min_db == self.channel_snr_max_db:
+            channel_snr_db = raw_s_low.new_tensor(self.channel_snr_min_db)
+        else:
+            channel_snr_db = torch.empty((), dtype=raw_s_low.dtype).uniform_(
+                self.channel_snr_min_db, self.channel_snr_max_db, generator=generator
+            )
+        # 通信路noiseはここだけで生成する。拡散noiseはmodel.training_stepで別途生成する。
+        raw_y, _eps_channel = add_channel_awgn(
+            raw_s_low, channel_snr_db, generator=generator
+        )
+        values = (raw_s_low, raw_s_high, raw_y)
+        if not all(torch.isfinite(value).all() for value in values):
+            raise RuntimeError("ADJSCC信号またはAWGN受信信号にNaN/Infがあります")
+        return {
+            "s_low": model_domain(raw_s_low, self.latent_min, self.latent_max),
+            "y": model_domain(raw_y, self.latent_min, self.latent_max),
+            "s_high": model_domain(raw_s_high, self.latent_min, self.latent_max),
+            "channel_snr_db": channel_snr_db,
+            "image": self.images[index],  # uint8 [H,W,3]
+        }
 
 
 def latent_range(train_cache: Dict) -> Tuple[float, float]:

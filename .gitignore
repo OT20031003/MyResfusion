@@ -10,3 +10,8 @@ my_resfusion_eval
 my_resfusion_cache
 my_resfusion_train
 my_awgn_resfusion_eval_snr0
+standard_received_y_cache
+*cache*
+standard_received_y_eval
+standard_received_y_train
+my_awgn_resfusion_eval

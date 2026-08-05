@@ -14,7 +14,7 @@ import torch
 from PIL import Image
 
 from adjscc_signal_data import list_images, load_crop
-from model import LatentResfusion
+from model import ADJSCCSignalResfusion, LatentResfusion
 from model.denoising_module import RDDM_Unet
 from variance_scheduler import CosineProScheduler, LinearProScheduler
 
@@ -31,10 +31,14 @@ def load_resfusion(checkpoint_path: str, device: torch.device):
         dim=int(hparams.get("dim", 64)), out_dim=channels, channels=channels,
         input_condition=True, input_condition_channels=channels,
         resnet_block_groups=int(hparams.get("resnet_block_groups", 8)),
+        channel_snr_condition="channel_snr_min_db" in hparams,
+        channel_snr_min_db=float(hparams.get("channel_snr_min_db", -4.0)),
+        channel_snr_max_db=float(hparams.get("channel_snr_max_db", 20.0)),
     )
     scheduler_type = hparams["noise_schedule"]
     scheduler = LinearProScheduler(int(hparams["T"])) if scheduler_type == "LinearPro" else CosineProScheduler(int(hparams["T"]))
-    model = LatentResfusion(denoising_module=denoiser, variance_scheduler=scheduler, **hparams)
+    model_class = ADJSCCSignalResfusion if "channel_snr_min_db" in hparams else LatentResfusion
+    model = model_class(denoising_module=denoiser, variance_scheduler=scheduler, **hparams)
     model.load_state_dict(checkpoint["state_dict"], strict=True)
     model.to(device).eval()
     for name in ("alphas_hat", "alphas", "betas", "betas_hat", "alphas_hat_t_minus_1"):
@@ -161,7 +165,15 @@ def main(args) -> None:
         low_nchw = torch.from_numpy(np.transpose(low_signal, (0, 3, 1, 2))).float().to(device)
         low_normalized = ((low_nchw - latent_min) / latent_scale).clamp(0.0, 1.0)
         with torch.inference_mode():
-            predicted = model.generate(low_normalized * 2.0 - 1.0)
+            model_input = low_normalized * 2.0 - 1.0
+            if "channel_snr_min_db" in settings:
+                inference_snr_db = torch.full(
+                    (model_input.shape[0],), low_snr,
+                    device=device, dtype=model_input.dtype,
+                )
+                predicted = model.generate(model_input, channel_snr_db=inference_snr_db)
+            else:
+                predicted = model.generate(model_input)
         predicted01 = ((predicted + 1.0) / 2.0).clamp(0.0, 1.0)
         predicted_raw = predicted01 * latent_scale + latent_min
         predicted_nhwc = predicted_raw.permute(0, 2, 3, 1).cpu().numpy()

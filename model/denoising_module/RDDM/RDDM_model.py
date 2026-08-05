@@ -19,7 +19,10 @@ class RDDM_Unet(pl.LightningModule):
             input_condition_channels=0,
             mask_condition=False,
             mask_condition_channels=0,
-            resnet_block_groups=8
+            resnet_block_groups=8,
+            channel_snr_condition=False,
+            channel_snr_min_db=-4.0,
+            channel_snr_max_db=20.0,
     ):
         super().__init__()
 
@@ -27,6 +30,11 @@ class RDDM_Unet(pl.LightningModule):
         self.input_condition = input_condition
         # ISTDの影マスクを条件入力として使用するかを保持する
         self.mask_condition = mask_condition
+        self.channel_snr_condition = channel_snr_condition
+        if channel_snr_max_db < channel_snr_min_db:
+            raise ValueError("channel_snr_max_db must be >= channel_snr_min_db")
+        self.channel_snr_min_db = float(channel_snr_min_db)
+        self.channel_snr_max_db = float(channel_snr_max_db)
 
         # ノイズ画像に条件画像・マスクを連結した入力チャネル数を決める
         input_channels = channels + input_condition_channels * \
@@ -54,6 +62,11 @@ class RDDM_Unet(pl.LightningModule):
             nn.GELU(),
             nn.Linear(time_dim, time_dim)
         )
+        # dB値を学習範囲で[-1,1]へ固定正規化し、時刻embeddingと同じ次元へ写像する。
+        # 無効時はmoduleを作らないため、従来checkpointのstate_dictを維持する。
+        self.channel_snr_mlp = nn.Sequential(
+            nn.Linear(1, time_dim), nn.SiLU(), nn.Linear(time_dim, time_dim)
+        ) if self.channel_snr_condition else None
 
         # Encoder（縮小経路）とDecoder（拡大経路）を格納する
 
@@ -97,7 +110,7 @@ class RDDM_Unet(pl.LightningModule):
         self.final_res_block = block_klass(dim * 2, dim, time_emb_dim=time_dim)
         self.final_conv = nn.Conv2d(dim, self.out_dim, 1)
 
-    def forward(self, x, time, input_cond=None, mask_cond=None):
+    def forward(self, x, time, input_cond=None, mask_cond=None, channel_snr_db=None):
         # 有効な条件入力をチャネル方向に連結する
         if self.input_condition:
             x = torch.cat((x, input_cond), dim=1)
@@ -110,6 +123,23 @@ class RDDM_Unet(pl.LightningModule):
         r = x.clone()
 
         t = self.time_mlp(time)
+        if self.channel_snr_condition:
+            if channel_snr_db is None:
+                raise ValueError("channel_snr_conditionにはchannel_snr_db (dB)が必要です")
+            channel_snr_db = torch.as_tensor(channel_snr_db, device=x.device, dtype=t.dtype)
+            if channel_snr_db.ndim == 0:
+                channel_snr_db = channel_snr_db.expand(x.shape[0])
+            channel_snr_db = channel_snr_db.reshape(-1, 1)
+            if channel_snr_db.shape[0] != x.shape[0]:
+                raise ValueError("channel_snr_dbはbatchごとに1値必要です")
+            span = self.channel_snr_max_db - self.channel_snr_min_db
+            if span == 0.0:
+                normalized_snr = torch.zeros_like(channel_snr_db)
+            else:
+                normalized_snr = 2.0 * (
+                    channel_snr_db - self.channel_snr_min_db
+                ) / span - 1.0
+            t = t + self.channel_snr_mlp(normalized_snr)
 
         # Encoderの中間特徴を保存し、Decoderのスキップ接続に使う
         h = []

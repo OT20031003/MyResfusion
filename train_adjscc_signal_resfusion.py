@@ -5,24 +5,104 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
 from torch.utils.data import DataLoader
 
 from adjscc_signal_data import (
+    AWGNSignalPairDataset,
+    MINIMUM_CHANNEL_SNR_DB,
     SIGNAL_PROCESSING_VERSION,
-    SignalPairDataset,
     build_pair_cache,
     checkpoint_fingerprint,
     latent_range,
     load_cache,
     validate_cache,
 )
-from model import LatentResfusion
+from model import ADJSCCSignalResfusion
 from model.denoising_module import RDDM_Unet
 from variance_scheduler import CosineProScheduler, LinearProScheduler
+
+
+class ValidationImagePSNR(Callback):
+    """validation latentをADJSCC Decoderで画像化し、平均画像PSNRを記録する。"""
+
+    def __init__(self, weights: str, channels: int, image_size: int,
+                 high_snr: float, latent_min: float, latent_max: float,
+                 seed: int) -> None:
+        super().__init__()
+        self.weights = weights
+        self.channels = channels
+        self.image_size = image_size
+        self.high_snr = high_snr
+        self.latent_min = latent_min
+        self.latent_scale = latent_max - latent_min
+        self.seed = seed
+        self._predictions = []
+        self._targets = []
+        self._codec = None
+        self._lpips = None
+
+    def on_validation_epoch_start(self, trainer, pl_module) -> None:
+        self._predictions.clear()
+        self._targets.clear()
+
+    def on_validation_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
+    ) -> None:
+        if outputs is not None:
+            self._predictions.append(outputs["prediction_model"])
+            self._targets.append(outputs["target_image"])
+
+    def on_validation_epoch_end(self, trainer, pl_module) -> None:
+        if not self._predictions:
+            return
+        # TensorFlow Decoderはvalidation時に遅延生成し、GPU学習とは分離してCPUで動かす。
+        if self._codec is None:
+            from ADJSCC.adjscc_module import ADJSCCCodec
+            self._codec = ADJSCCCodec(
+                self.weights, self.channels, self.image_size,
+                seed=self.seed, device="/CPU:0",
+            )
+        prediction_model = torch.cat(self._predictions).float()
+        target = torch.cat(self._targets).numpy().astype(np.float64)
+        prediction_raw = (
+            (prediction_model + 1.0) / 2.0 * self.latent_scale + self.latent_min
+        )
+        prediction_nhwc = prediction_raw.permute(0, 2, 3, 1).numpy()
+        # Decoderへ渡す前に、学習targetと同じ送信電力制約へ戻す。
+        prediction_nhwc = self._codec.power_normalize(prediction_nhwc)
+        decoded = self._codec.decode(prediction_nhwc, self.high_snr).astype(np.float64)
+        mse_per_image = np.mean((decoded - target) ** 2, axis=(1, 2, 3))
+        psnr_per_image = 10.0 * np.log10(255.0 ** 2 / np.maximum(mse_per_image, 1e-12))
+        image_psnr = torch.tensor(float(np.mean(psnr_per_image)), device=pl_module.device)
+        if self._lpips is None:
+            try:
+                from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+            except (ImportError, ModuleNotFoundError) as error:
+                raise RuntimeError(
+                    "validation LPIPSにはtorchmetricsのLPIPS依存関係が必要です"
+                ) from error
+            self._lpips = LearnedPerceptualImagePatchSimilarity(
+                net_type="alex", normalize=True
+            ).to(pl_module.device)
+        decoded_tensor = torch.from_numpy(decoded).permute(0, 3, 1, 2).float()
+        target_tensor = torch.from_numpy(target).permute(0, 3, 1, 2).float()
+        decoded_tensor = decoded_tensor.to(pl_module.device) / 255.0
+        target_tensor = target_tensor.to(pl_module.device) / 255.0
+        image_lpips = self._lpips(decoded_tensor, target_tensor)
+        self._lpips.reset()
+        pl_module.log(
+            "val_image_PSNR", image_psnr, on_step=False, on_epoch=True,
+            prog_bar=True, logger=True, sync_dist=True,
+        )
+        pl_module.log(
+            "val_image_LPIPS", image_lpips, on_step=False, on_epoch=True,
+            prog_bar=False, logger=True, sync_dist=True,
+        )
 
 
 def cache_expectation(args, image_dir: Path, random_crop: bool, crops: int) -> dict:
@@ -89,6 +169,12 @@ def ensure_cache(args, image_dir: Path, output: Path, random_crop: bool, crops: 
 def main(args) -> None:
     if args.low_snr >= args.high_snr:
         raise ValueError("--low_snrは--high_snrより小さくしてください")
+    if args.channel_snr_min_db < MINIMUM_CHANNEL_SNR_DB:
+        raise ValueError(f"--channel-snr-min-dbは{MINIMUM_CHANNEL_SNR_DB:g} dB以上にしてください")
+    if args.channel_snr_max_db < args.channel_snr_min_db:
+        raise ValueError("--channel-snr-max-dbは--channel-snr-min-db以上にしてください")
+    if args.mode != "epsilon":
+        raise ValueError("AWGN付きADJSCC信号学習は--mode epsilonのみ対応します")
     pl.seed_everything(args.seed, workers=True)
     if args.matmul_precision != "default":
         torch.set_float32_matmul_precision(args.matmul_precision)
@@ -103,8 +189,15 @@ def main(args) -> None:
     val_cache = ensure_cache(args, val_dir, val_path, False, 1)
 
     latent_min, latent_max = latent_range(train_cache)
-    train_dataset = SignalPairDataset(train_cache, latent_min, latent_max)
-    val_dataset = SignalPairDataset(val_cache, latent_min, latent_max)
+    train_dataset = AWGNSignalPairDataset(
+        train_cache, latent_min, latent_max,
+        args.channel_snr_min_db, args.channel_snr_max_db,
+    )
+    val_dataset = AWGNSignalPairDataset(
+        val_cache, latent_min, latent_max,
+        args.channel_snr_min_db, args.channel_snr_max_db,
+        deterministic_seed=args.seed + 100000,
+    )
     train_loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
         pin_memory=args.pin_mem, drop_last=True, persistent_workers=args.num_workers > 0,
@@ -119,31 +212,38 @@ def main(args) -> None:
         dim=args.dim, out_dim=args.transmit_channel_num, channels=args.transmit_channel_num,
         input_condition=True, input_condition_channels=args.transmit_channel_num,
         resnet_block_groups=args.resnet_block_groups,
+        channel_snr_condition=True,
+        channel_snr_min_db=args.channel_snr_min_db,
+        channel_snr_max_db=args.channel_snr_max_db,
     )
     # 復元時に必要なADJSCC条件と正規化範囲もLightning checkpointへ格納する。
-    model = LatentResfusion(
+    model = ADJSCCSignalResfusion(
         denoising_module=denoiser, variance_scheduler=scheduler,
         **vars(args), n_channels=args.transmit_channel_num,
         latent_min=latent_min, latent_max=latent_max,
     )
     checkpoint = ModelCheckpoint(
-        monitor="val_latent_PSNR", mode="max",
-        filename="best-{epoch:04d}-{val_latent_PSNR:.3f}", save_top_k=1, save_last=True,
+        monitor="val_image_PSNR", mode="max",
+        filename="best-{epoch:04d}-{val_image_PSNR:.3f}", save_top_k=1, save_last=True,
         every_n_epochs=args.check_val_every_n_epoch,
+    )
+    image_psnr = ValidationImagePSNR(
+        args.adjscc_weights, args.transmit_channel_num, args.image_size,
+        args.high_snr, latent_min, latent_max, args.seed,
     )
     trainer = Trainer(
         accelerator=args.accelerator, devices=args.devices, max_epochs=args.epochs,
         accumulate_grad_batches=args.accum_iter, default_root_dir=args.log_dir,
         check_val_every_n_epoch=args.check_val_every_n_epoch,
         gradient_clip_val=args.gradient_clip, precision=args.precision,
-        callbacks=[checkpoint, LearningRateMonitor(logging_interval="epoch")],
+        callbacks=[image_psnr, checkpoint, LearningRateMonitor(logging_interval="epoch")],
         log_every_n_steps=1, deterministic="warn",
         strategy="auto" if args.devices == 1 else "ddp",
     )
     print(f"Train pairs: {len(train_dataset)}, validation pairs: {len(val_dataset)}")
     print(f"Signal shape: {tuple(train_cache['low'].shape[1:])} (NCHW)")
     print(f"Shared latent range: [{latent_min:.6g}, {latent_max:.6g}]")
-    print("Channel: disabled")
+    print(f"Channel SNR: [{args.channel_snr_min_db:g}, {args.channel_snr_max_db:g}] dB (per-sample AWGN)")
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader,
                 ckpt_path=args.resume_ckpt)
 
@@ -156,6 +256,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--adjscc_weights", required=True)
     value.add_argument("--low_snr", type=float, default=-10.0)
     value.add_argument("--high_snr", type=float, default=20.0)
+    value.add_argument("--channel-snr-min-db", dest="channel_snr_min_db", type=float, default=-4.0)
+    value.add_argument("--channel-snr-max-db", dest="channel_snr_max_db", type=float, default=20.0)
     value.add_argument("--transmit_channel_num", type=int, default=16)
     value.add_argument("--image_size", type=int, default=256)
     value.add_argument("--cache_dir", default="my_resfusion_cache")

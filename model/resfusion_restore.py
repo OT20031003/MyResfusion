@@ -217,7 +217,8 @@ class GaussianResfusion_Restore(pl.LightningModule):
             raise ValueError("Wrong lr scheduler type !!!")
 
     def generate(self, X_0_hat: torch.Tensor,
-                 get_intermediate_steps: bool = False) -> Union[torch.Tensor, List[torch.Tensor]]:
+                 get_intermediate_steps: bool = False,
+                 channel_snr_db: Optional[torch.Tensor] = None) -> Union[torch.Tensor, List[torch.Tensor]]:
         """
         Generate a batch of images via resfusion
         :param X_0_hat: the scaled inputs
@@ -244,15 +245,20 @@ class GaussianResfusion_Restore(pl.LightningModule):
             sigma = torch.sqrt(beta_hat_t)
             z = torch.randn_like(X_noise)
             if self.mode == 'epsilon':
-                pred_resnoise = self.denoising_module(x=X_noise, time=t_tensor,
-                                                      input_cond=X_0_hat)  # predict the resnoise
+                denoiser_args = dict(x=X_noise, time=t_tensor, input_cond=X_0_hat)
+                if channel_snr_db is not None:
+                    denoiser_args["channel_snr_db"] = channel_snr_db
+                pred_resnoise = self.denoising_module(**denoiser_args)  # predict the resnoise
                 if t == 0:
                     z.fill_(0)
                 # denoise step from x_t to x_{t-1} with formula 33
                 X_noise = 1 / (torch.sqrt(alpha_t)) * \
                           (X_noise - (beta_t / torch.sqrt(1 - alpha_hat_t)) * pred_resnoise) + sigma * z
             elif self.mode == 'sample':
-                pred_x_0 = self.denoising_module(x=X_noise, time=t_tensor, input_cond=X_0_hat)  # predict the x_0
+                denoiser_args = dict(x=X_noise, time=t_tensor, input_cond=X_0_hat)
+                if channel_snr_db is not None:
+                    denoiser_args["channel_snr_db"] = channel_snr_db
+                pred_x_0 = self.denoising_module(**denoiser_args)  # predict the x_0
                 # threshold clip
                 pred_x_0 = torch.clamp(pred_x_0, min=-1, max=1)
                 if t == 0:
@@ -265,8 +271,10 @@ class GaussianResfusion_Restore(pl.LightningModule):
                                / (1 - alpha_hat_t)
                                + pred_residual_term + sigma * z)
             elif self.mode == 'residual':
-                pred_residual_term = self.denoising_module(x=X_noise, time=t_tensor,
-                                                           input_cond=X_0_hat)  # predict the x_0
+                denoiser_args = dict(x=X_noise, time=t_tensor, input_cond=X_0_hat)
+                if channel_snr_db is not None:
+                    denoiser_args["channel_snr_db"] = channel_snr_db
+                pred_residual_term = self.denoising_module(**denoiser_args)  # predict the x_0
                 pred_x_0 = X_0_hat - pred_residual_term
                 # threshold clip
                 pred_x_0 = torch.clamp(pred_x_0, min=-1, max=1)
