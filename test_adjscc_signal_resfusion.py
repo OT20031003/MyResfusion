@@ -2,7 +2,12 @@
 
 import argparse
 import csv
+import gc
+import os
 from pathlib import Path
+
+# torchmetricsがMatplotlibをimportする際のcache書込先をWSLの一時領域にする。
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-resfusion")
 
 import numpy as np
 import torch
@@ -42,7 +47,73 @@ def psnr(reference: np.ndarray, prediction: np.ndarray) -> float:
     return float("inf") if mse == 0 else 10.0 * np.log10(255.0 ** 2 / mse)
 
 
+def image_tensor(image: np.ndarray, device: torch.device) -> torch.Tensor:
+    """0～255のRGB画像をtorchmetrics用NCHW・0～1 tensorへ変換する。"""
+    value = torch.from_numpy(np.asarray(image, dtype=np.float32).copy())
+    if value.ndim == 3:
+        value = value.unsqueeze(0)
+    return value.permute(0, 3, 1, 2).to(device) / 255.0
+
+
+def calculate_perceptual_metrics(
+    input_paths, reconstructed_dir: Path, image_size: int,
+    device: torch.device, seed: int, batch_size: int,
+) -> dict:
+    """全画像に対する平均LPIPS、平均DISTS、FIDを計算する。"""
+    try:
+        from torchmetrics.image.dists import DeepImageStructureAndTextureSimilarity
+        from torchmetrics.image.fid import FrechetInceptionDistance
+        from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+    except (ImportError, ModuleNotFoundError) as error:
+        raise RuntimeError(
+            "LPIPS/DISTS/FIDの計算にはtorchmetricsとtorch-fidelityが必要です。"
+            " `python -m pip install --no-deps torch-fidelity==0.3.0` を実行してください。"
+        ) from error
+
+    try:
+        lpips_metric = LearnedPerceptualImagePatchSimilarity(
+            net_type="alex", normalize=True
+        ).to(device)
+        dists_metric = DeepImageStructureAndTextureSimilarity().to(device)
+        fid_metric = FrechetInceptionDistance(feature=2048, normalize=True).to(device)
+    except ModuleNotFoundError as error:
+        raise RuntimeError(
+            "FIDの初期化に失敗しました。"
+            " `python -m pip install --no-deps torch-fidelity==0.3.0` を実行してください。"
+        ) from error
+
+    rng = np.random.default_rng(seed)
+    with torch.inference_mode():
+        for start in range(0, len(input_paths), batch_size):
+            current_paths = input_paths[start : start + batch_size]
+            references, predictions = [], []
+            for path in current_paths:
+                references.append(load_crop(path, image_size, random_crop=False, rng=rng))
+                output_path = reconstructed_dir / f"{path.stem}_reconstructed.png"
+                with Image.open(output_path) as source:
+                    predictions.append(np.asarray(source.convert("RGB"), dtype=np.float32))
+            reference_tensor = image_tensor(np.stack(references), device)
+            prediction_tensor = image_tensor(np.stack(predictions), device)
+            lpips_metric.update(prediction_tensor, reference_tensor)
+            dists_metric.update(prediction_tensor, reference_tensor)
+            fid_metric.update(reference_tensor, real=True)
+            fid_metric.update(prediction_tensor, real=False)
+
+    result = {
+        "lpips": float(lpips_metric.compute().cpu()),
+        "dists": float(dists_metric.compute().cpu()),
+        "fid": float(fid_metric.compute().cpu()),
+    }
+    del lpips_metric, dists_metric, fid_metric
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return result
+
+
 def main(args) -> None:
+    if args.metrics_batch_size < 1:
+        raise ValueError("--metrics_batch_sizeは1以上にしてください")
     if args.seed is not None:
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
@@ -66,6 +137,8 @@ def main(args) -> None:
     paths = list_images(str(image_dir))
     if args.limit is not None:
         paths = paths[: args.limit]
+    if len(paths) < 2:
+        raise ValueError("FID計算には2枚以上の評価画像が必要です")
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     resfusion_dir = output_dir / "resfusion_high_decoder"
@@ -129,9 +202,29 @@ def main(args) -> None:
             "no_resfusion_high_image", "no_resfusion_high_psnr_db",
         ))
         writer.writerows(rows)
-    print(f"Mean Resfusion->high PSNR: {np.mean([row[2] for row in rows]):.3f} dB")
-    print(f"Mean low->low PSNR: {np.mean([row[4] for row in rows]):.3f} dB")
-    print(f"Mean low->high PSNR: {np.mean([row[6] for row in rows]):.3f} dB")
+    routes = (
+        ("resfusion_high", resfusion_dir, float(np.mean([row[2] for row in rows]))),
+        ("no_resfusion_low", direct_low_dir, float(np.mean([row[4] for row in rows]))),
+        ("no_resfusion_high", direct_high_dir, float(np.mean([row[6] for row in rows]))),
+    )
+    print("全画像の生成が完了しました。LPIPS、DISTS、FIDを計算します。")
+    metrics_device = torch.device(args.metrics_device)
+    summary_rows = []
+    for route_name, route_dir, mean_psnr in routes:
+        values = calculate_perceptual_metrics(
+            paths, route_dir, image_size, metrics_device, args.seed or 2024,
+            args.metrics_batch_size,
+        )
+        summary_rows.append((route_name, mean_psnr, values["lpips"], values["dists"], values["fid"]))
+        print(
+            f"{route_name}: PSNR={mean_psnr:.3f} dB, "
+            f"LPIPS={values['lpips']:.6f}, DISTS={values['dists']:.6f}, "
+            f"FID={values['fid']:.3f}"
+        )
+    with (output_dir / "summary_metrics.csv").open("w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(("route", "mean_psnr_db", "mean_lpips", "mean_dists", "fid"))
+        writer.writerows(summary_rows)
     print(f"Saved: {output_dir.resolve()}")
 
 
@@ -145,6 +238,11 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--high_snr", type=float, default=None)
     value.add_argument("--device", default=None, help="PyTorch device。例: cuda:0, cpu")
     value.add_argument("--tf_device", default=None, help="TensorFlow device。例: /GPU:0, /CPU:0")
+    value.add_argument(
+        "--metrics_device", default="cpu",
+        help="LPIPS/DISTS/FIDのdevice。TensorFlowとのGPU競合を避ける既定値はcpu",
+    )
+    value.add_argument("--metrics_batch_size", type=int, default=8)
     value.add_argument("--seed", type=int, default=2024)
     value.add_argument("--limit", type=int, default=None)
     return value

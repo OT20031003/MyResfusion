@@ -50,6 +50,7 @@ ADJSCCを再学習して得た従来HDF5形式の `.h5` checkpointが必要で�
 ```bash
 conda activate resfusion-adjscc
 python -m pip install "setuptools==70.3.0" einops
+python -m pip install --no-deps "torch-fidelity==0.3.0"
 ```
 
 `einops`はMask版だけでなく、今回使う`RDDM_Unet`の内部でも必要です。
@@ -134,9 +135,10 @@ my_resfusion_eval/resfusion_high_decoder/*_reconstructed.png
 my_resfusion_eval/no_resfusion_low_decoder/*_reconstructed.png
 my_resfusion_eval/no_resfusion_high_decoder/*_reconstructed.png
 my_resfusion_eval/metrics.csv
+my_resfusion_eval/summary_metrics.csv
 ```
 
-3ディレクトリはそれぞれ、Resfusion出力をhigh条件で復号、low信号をlow条件で直接復号、low信号をhigh条件で直接復号した結果です。`metrics.csv`には3経路それぞれについて、center cropした入力GTとのPSNRを保存します。動作確認で先頭3枚だけ処理する場合は `--limit 3` を指定します。
+3ディレクトリはそれぞれ、Resfusion出力をhigh条件で復号、low信号をlow条件で直接復号、low信号をhigh条件で直接復号した結果です。`metrics.csv`には画像ごとのPSNR、`summary_metrics.csv`には3経路それぞれの平均PSNR・平均LPIPS・平均DISTS・FIDを保存します。知覚評価は全画像の生成後に実行され、TensorFlowとのGPUメモリ競合を避けるため既定ではCPUを使います。GPUで計算する場合は`--metrics_device cuda`を指定します。初回は各指標の学習済み重みがdownloadされる場合があります。動作確認で先頭3枚だけ処理する場合は `--limit 3` を指定できますが、FIDは少数画像では信頼できないため、正式評価では全画像を使用してください。
 
 ## 注意点
 
