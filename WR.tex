@@ -1,0 +1,727 @@
+\documentclass[a4paper,10pt,twocolumn]{ltjsarticle}
+
+% ============================================================
+% LuaLaTeXでコンパイル
+%   lualatex main.tex
+% ============================================================
+
+% ------------------------------
+% 日本語・フォント
+% ------------------------------
+\usepackage{luatexja}
+\usepackage{luatexja-fontspec}
+\setmainfont{TeX Gyre Termes}
+\setsansfont{TeX Gyre Heros}
+\setmainjfont{HaranoAjiMincho}
+\setsansjfont{HaranoAjiGothic}
+
+% ------------------------------
+% 数式・図表・アルゴリズム
+% ------------------------------
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+% ------------------------------
+% ページ設定
+% ------------------------------
+\setlength{\columnsep}{7mm}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{6pt plus 2pt minus 2pt}
+\setlength{\intextsep}{6pt plus 2pt minus 2pt}
+
+% ------------------------------
+% アルゴリズムの日本語化
+% ------------------------------
+\floatname{algorithm}{アルゴリズム}
+
+\algrenewcommand\algorithmicrequire{\textbf{入力：}}
+\algrenewcommand\algorithmicensure{\textbf{出力：}}
+\algrenewcommand\algorithmicwhile{\textbf{while}}
+\algrenewcommand\algorithmicdo{\textbf{do}}
+\algrenewcommand\algorithmicend{\textbf{end}}
+\algrenewcommand\algorithmicfor{\textbf{for}}
+\algrenewcommand\algorithmicif{\textbf{if}}
+\algrenewcommand\algorithmicthen{\textbf{then}}
+\algrenewcommand\algorithmicelse{\textbf{else}}
+
+% ------------------------------
+% 記号
+% ------------------------------
+\newcommand{\vx}{\bm{x}}
+\newcommand{\vz}{\bm{z}}
+\newcommand{\vu}{\bm{u}}
+\newcommand{\vy}{\bm{y}}
+\newcommand{\vR}{\bm{R}}
+\newcommand{\veps}{\bm{\epsilon}}
+\newcommand{\veta}{\bm{\eta}}
+\newcommand{\vomega}{\bm{\omega}}
+\newcommand{\vmu}{\bm{\mu}}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\Id}{\bm{I}}
+
+\newcommand{\Enc}{\mathcal{E}_{\phi}}
+\newcommand{\Dec}{\mathcal{D}_{\psi}}
+\newcommand{\Dist}{\mathcal{D}}
+
+\newtheorem{proposition}{命題}
+\newtheorem{remark}{注意}
+
+% ============================================================
+% 論文情報
+% ============================================================
+
+\title{
+研究案
+}
+
+\author{
+著者名
+}
+
+\date{}
+
+% ============================================================
+% 本文
+% ============================================================
+
+\begin{document}
+
+\maketitle
+
+\section{System Model}
+
+入力画像を$\mathbf{x} \in \mathcal{R}^{3\times H \times W}$とすると
+低SNR $\gamma_{low}$ 条件でエンコードされる
+\begin{align}
+  \bm{z}_{low} = E(\mathbf{x};\gamma_{low})
+\end{align}
+その後正規化されたものを$\tilde{\bm{z}}_{low}$
+とする.
+受信信号$y$は
+\begin{align}
+  y = \tilde{\bm{z}}_{low} + \sigma \cdot \bm{n}
+  \label{eq:rec}
+\end{align}
+$\sigma^2$ はノイズ分散である.
+
+また文献\cite{shi2024resfusion}より
+$\bm{R} = \tilde{\bm{z}}_{low} - \bm{z}_{high}$
+とすれば
+\begin{align}
+  \bm{z}_t = (2\sqrt{\bar{\alpha_t}} -  1)\bm{z}_{high} + (1 - \sqrt{\bar{\alpha_t}})\tilde{\bm{z}}_{low} + \sqrt{1 - \bar{\alpha}_t} \bm{\epsilon} 
+\end{align}
+となる.$\bm{\epsilon} \sim \mathcal{N}(0, 1)$の人工付加ノイズである.
+
+ここで$\sqrt{\bar{\alpha_t}} = \frac{1}{2}$
+とすれば
+\begin{align}
+  \bm{z}_t =  \frac{\tilde{\bm{z}}_{low}}{2} + \frac{\sqrt{3}}{2} \cdot \bm{\epsilon} 
+  \label{eq:forward}
+\end{align}
+となる.
+式\eqref{eq:rec}
+より
+\begin{align}
+  \frac{1}{2}y + \sigma'\bm{\epsilon}_{add}  = \frac{1}{2}\tilde{\bm{z}}_{low} + \frac{1}{2}\sigma \cdot \bm{n} +\sigma'\bm{\epsilon}_{add} 
+  \label{eq:rec1}
+\end{align}
+式\eqref{eq:forward}と式\eqref{eq:rec1}
+を見比べてつまり受信側で\eqref{eq:forward}
+と同じ状態にするには、
+チャネルノイズに加えてノイズ標準偏差$\sigma'$を意図的追加すればいい.
+\begin{align}
+  \sigma' = \frac{\sqrt{3 - \sigma^2}}{2}
+\end{align}
+ただし受信側で正規化などをするとこの関係性が
+壊れるので考えない.
+\section{Contribution}
+\begin{itemize}
+  \item チャネルSNRに依らずに常に同じ高速タイムステップ
+  \item Resfusionの活用. 運用時にはチャネルノイズがのった劣化画像がくるのでこれを意図的に加えるforward過程とみなす
+\end{itemize}
+
+% Requires:
+% \usepackage{amsmath,amssymb}
+% \usepackage{algorithm}
+% \usepackage{algpseudocode}
+
+\section{Training}
+
+学習時には，推論開始点 $T'$ だけを学習するのではなく，
+
+\begin{equation}
+t\in\{1,\ldots,T'\}
+\label{eq:t_range}
+\end{equation}
+
+からタイムステップ $t$ を一様に選択する．
+
+すなわち，各学習更新において異なる $t$ を選択し，
+$1,\ldots,T'$ の全タイムステップにおける逆過程を学習する．
+$\sqrt{\bar{\alpha}_{T'}}\simeq 1/2$ は推論開始点を決める条件であり，
+学習時の $t$ を $T'$ に固定する条件ではない．
+
+また，
+
+\begin{equation}
+\bar{\alpha}_0=1
+\label{eq:alpha_zero}
+\end{equation}
+
+とする．
+
+\subsection{受信信号の生成}
+
+各学習データについて，
+
+\[
+n\sim\mathcal{N}(0,1)
+\]
+
+を生成し，式~\eqref{eq:y} に従って
+
+\begin{equation}
+y
+=
+\tilde z_{\mathrm{low}}
++
+\sigma\cdot n
+\label{eq:y_training}
+\end{equation}
+
+を生成する．
+
+複数のチャネルSNRを学習対象とする場合には，
+各学習更新において対象となるチャネルSNRに対応した
+$\sigma$ を使用する．
+
+\subsection{各タイムステップにおける $z_t$ の生成}
+
+次に，
+
+\[
+\epsilon_{\mathrm{add}}
+\sim
+\mathcal{N}(0,1)
+\]
+
+を生成する．$n$ と $\epsilon_{\mathrm{add}}$ は互いに独立とする．
+
+選択された任意の
+$t\in\{1,\ldots,T'\}$
+について，$z_t$ を
+
+\begin{equation}
+\boxed{
+\begin{aligned}
+z_t
+={}&
+\left(
+2\sqrt{\bar{\alpha}_t}-1
+\right)
+z_{\mathrm{high}}
+\\
+&+
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)y
+\\
+&+
+\sqrt{
+1-\bar{\alpha}_t
+-
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)^2
+\sigma^2
+}
+\epsilon_{\mathrm{add}}
+\end{aligned}
+}
+\label{eq:zt_training}
+\end{equation}
+
+として生成する．
+
+式~\eqref{eq:y_training} を
+式~\eqref{eq:zt_training} に代入すると，
+
+\begin{equation}
+\begin{aligned}
+z_t
+={}&
+\left(
+2\sqrt{\bar{\alpha}_t}-1
+\right)
+z_{\mathrm{high}}
+\\
+&+
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)
+\tilde z_{\mathrm{low}}
+\\
+&+
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)
+\sigma n
+\\
+&+
+\sqrt{
+1-\bar{\alpha}_t
+-
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)^2
+\sigma^2
+}
+\epsilon_{\mathrm{add}}
+\end{aligned}
+\label{eq:zt_training_expanded}
+\end{equation}
+
+となる．
+
+ここで，式~\eqref{eq:zt_original} における
+$\epsilon$ は
+
+\begin{equation}
+\boxed{
+\epsilon
+=
+\frac{
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)
+\sigma n
++
+\sqrt{
+1-\bar{\alpha}_t
+-
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)^2
+\sigma^2
+}
+\epsilon_{\mathrm{add}}
+}{
+\sqrt{1-\bar{\alpha}_t}
+}
+}
+\label{eq:epsilon_training}
+\end{equation}
+
+と表される．
+
+$n$ と $\epsilon_{\mathrm{add}}$ は独立であるため，
+式~\eqref{eq:epsilon_training} の分子の分散は
+
+\begin{equation}
+\begin{aligned}
+&
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)^2
+\sigma^2
+\\
+&\quad+
+1-\bar{\alpha}_t
+-
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)^2
+\sigma^2
+\\
+&=
+1-\bar{\alpha}_t
+\end{aligned}
+\label{eq:noise_variance}
+\end{equation}
+
+となる．
+
+したがって，
+
+\[
+\epsilon\sim\mathcal{N}(0,1)
+\]
+
+であり，式~\eqref{eq:zt_training} は
+式~\eqref{eq:zt_original} と同じ分布の $z_t$ を生成する．
+
+式~\eqref{eq:zt_training} の平方根が実数となるためには，
+
+\begin{equation}
+1-\bar{\alpha}_t
+-
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)^2
+\sigma^2
+\geq 0
+\label{eq:training_condition}
+\end{equation}
+
+が必要である．
+
+$t\leq T'$ かつ
+$\sqrt{\bar{\alpha}_{T'}}\simeq 1/2$
+である場合，$\sigma^2\leq 3$ を満たせば，
+$1,\ldots,T'$ の各タイムステップで
+式~\eqref{eq:training_condition} を満たす．
+
+\subsection{resnoise の教師信号}
+
+文献~\cite{resfusion} の Appendix A.1 に従い，
+通常の人工付加ノイズ $\epsilon$ だけでなく，
+$\epsilon$ と重み付き残差 $R$ の和を教師信号とする．
+
+レポートですでに定義した
+
+\[
+R
+=
+\tilde z_{\mathrm{low}}
+-
+z_{\mathrm{high}}
+\]
+
+をそのまま使用する．
+
+各タイムステップ $t$ における教師信号は
+
+\begin{equation}
+\boxed{
+\epsilon
++
+\frac{
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)
+\sqrt{1-\bar{\alpha}_t}
+}{
+1-
+\dfrac{
+\bar{\alpha}_t
+}{
+\bar{\alpha}_{t-1}
+}
+}
+R
+}
+\label{eq:resnoise_target}
+\end{equation}
+
+である．
+
+式~\eqref{eq:epsilon_training} を代入すると，
+実際に学習で使用する教師信号は
+
+\begin{equation}
+\boxed{
+\begin{aligned}
+&
+\frac{
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)
+\sigma n
++
+\sqrt{
+1-\bar{\alpha}_t
+-
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)^2
+\sigma^2
+}
+\epsilon_{\mathrm{add}}
+}{
+\sqrt{1-\bar{\alpha}_t}
+}
+\\
+&\quad+
+\frac{
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)
+\sqrt{1-\bar{\alpha}_t}
+}{
+1-
+\dfrac{
+\bar{\alpha}_t
+}{
+\bar{\alpha}_{t-1}
+}
+}
+R
+\end{aligned}
+}
+\label{eq:resnoise_target_expanded}
+\end{equation}
+
+となる．
+
+ネットワークには，現在の状態 $z_t$，
+受信信号 $y$，およびタイムステップ $t$ を入力する．
+
+ネットワークの出力を，文献~\cite{resfusion} と同様に
+
+\begin{equation}
+\operatorname{res}\epsilon_{\theta}(z_t,y,t)
+\label{eq:network_output}
+\end{equation}
+
+とする．
+
+学習では，次の二乗誤差を最小化する．
+
+\begin{equation}
+\boxed{
+\begin{aligned}
+\min_{\theta}\;
+\mathbb{E}_{x,n,\epsilon_{\mathrm{add}},t}
+\Bigg[
+\Bigg\|
+&
+\frac{
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)
+\sigma n
++
+\sqrt{
+1-\bar{\alpha}_t
+-
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)^2
+\sigma^2
+}
+\epsilon_{\mathrm{add}}
+}{
+\sqrt{1-\bar{\alpha}_t}
+}
+\\
+&+
+\frac{
+\left(
+1-\sqrt{\bar{\alpha}_t}
+\right)
+\sqrt{1-\bar{\alpha}_t}
+}{
+1-
+\dfrac{
+\bar{\alpha}_t
+}{
+\bar{\alpha}_{t-1}
+}
+}
+R
+\\
+&-
+\operatorname{res}\epsilon_{\theta}(z_t,y,t)
+\Bigg\|_2^2
+\Bigg]
+\end{aligned}
+}
+\label{eq:training_objective}
+\end{equation}
+
+ここで，期待値に含まれる $t$ は，
+式~\eqref{eq:t_range} の
+
+\[
+1,\ldots,T'
+\]
+
+から一様に選択する．
+
+したがって，ネットワークは推論で使用する
+
+\[
+T',T'-1,\ldots,1
+\]
+
+の全タイムステップにおける
+$\operatorname{res}\epsilon_{\theta}(z_t,y,t)$
+を学習する．
+
+\subsection{学習手順}
+
+学習時の処理をまとめると，以下のようになる．
+
+\begin{enumerate}
+  \item 入力画像 $x$ に対応する
+  $\tilde z_{\mathrm{low}}$ と
+  $z_{\mathrm{high}}$ を取得する．
+
+  \item
+  \[
+  R
+  =
+  \tilde z_{\mathrm{low}}
+  -
+  z_{\mathrm{high}}
+  \]
+  を計算する．
+
+  \item
+  $t\in\{1,\ldots,T'\}$ から
+  $t$ を一様に選択する．
+
+  \item
+  \[
+  n\sim\mathcal{N}(0,1)
+  \]
+  を生成し，
+  \[
+  y
+  =
+  \tilde z_{\mathrm{low}}
+  +
+  \sigma n
+  \]
+  を生成する．
+
+  \item
+  \[
+  \epsilon_{\mathrm{add}}
+  \sim
+  \mathcal{N}(0,1)
+  \]
+  を生成する．
+
+  \item 式~\eqref{eq:zt_training} により
+  $z_t$ を生成する．
+
+  \item 式~\eqref{eq:resnoise_target_expanded}
+  により教師信号を計算する．
+
+  \item
+  $(z_t,y,t)$ をネットワークへ入力し，
+  $\operatorname{res}\epsilon_{\theta}(z_t,y,t)$
+  を出力する．
+
+  \item 式~\eqref{eq:training_objective}
+  の二乗誤差を最小化する．
+\end{enumerate}
+
+
+\section{Inference}
+
+推論時には，受信信号
+
+\[
+y
+=
+\tilde z_{\mathrm{low}}
++
+\sigma n
+\]
+
+のみが与えられる．
+
+最初に，
+
+\[
+\epsilon_{\mathrm{add}}
+\sim
+\mathcal{N}(0,1)
+\]
+
+を生成し，
+
+\begin{equation}
+z_{T'}
+=
+\frac{1}{2}y
++
+\frac{\sqrt{3-\sigma^2}}{2}
+\epsilon_{\mathrm{add}}
+\label{eq:inference_initial}
+\end{equation}
+
+を生成する．
+
+その後，
+
+\[
+t=T',T'-1,\ldots,1
+\]
+
+の順に，
+$\operatorname{res}\epsilon_{\theta}(z_t,y,t)$
+を使用して逆過程を実行する．
+
+学習時に
+$t\in\{1,\ldots,T'\}$
+の全範囲を学習しているため，
+推論時には各タイムステップに対応する
+$\operatorname{res}\epsilon_{\theta}(z_t,y,t)$
+を使用できる．
+
+
+\section{Contribution}
+
+\begin{itemize}
+  \item
+  学習時には
+  $t\in\{1,\ldots,T'\}$
+  の全タイムステップを学習しながら，
+  推論時には
+  $\sqrt{\bar{\alpha}_{T'}}\simeq 1/2$
+  を満たす同一の高速タイムステップ $T'$ から開始する．
+
+  \item
+  チャネルSNRに対応する $\sigma$ を用いて
+  人工付加ノイズの大きさを調整することで，
+  チャネルノイズをResfusionのforward過程に含まれる
+  ノイズの一部として扱う．
+
+  \item
+  運用時に得られるチャネルノイズが付加された
+  受信信号 $y$ から，追加の人工付加ノイズを用いて
+  $z_{T'}$ を直接構成する．
+\end{itemize}
+
+
+% ============================================================
+\begin{thebibliography}{9}
+% ============================================================
+
+\bibitem{shi2024resfusion}
+Z.~Shi, H.~Zheng, C.~Xu, C.~Dong, B.~Pan, X.~Xie,
+A.~He, T.~Li, and H.~Fu,
+``Resfusion: Denoising Diffusion Probabilistic Models
+for Image Restoration Based on Prior Residual Noise,''
+\emph{Advances in Neural Information Processing Systems},
+vol.~37, 2024.
+
+\bibitem{ho2020ddpm}
+J.~Ho, A.~Jain, and P.~Abbeel,
+``Denoising Diffusion Probabilistic Models,''
+\emph{Advances in Neural Information Processing Systems},
+vol.~33, pp.~6840--6851, 2020.
+
+\bibitem{song2020ddim}
+J.~Song, C.~Meng, and S.~Ermon,
+``Denoising Diffusion Implicit Models,''
+arXiv preprint arXiv:2010.02502, 2020.
+
+\end{thebibliography}
+
+\end{document}
