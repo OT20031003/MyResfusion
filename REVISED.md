@@ -73,11 +73,11 @@ cacheを作り直す場合は `--rebuild_cache`、checkpointから再開する�
 
 ```bash
 python infer_adjscc_signal_resfusion_wr.py \
-  --resfusion_ckpt wr_signal_train/lightning_logs/version_0/checkpoints/last.ckpt \
-  --channel_snr_db -4 \
-  --adjscc_weights ADJSCC/model/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs8_lr0.0001.h5 \
-  --input_dir ../datasets/Raindrop/test_a/gt \
-  --output_dir wr_signal_inference \
+  --resfusion_ckpt wr_signal_train/lightning_logs/version_4/checkpoints/last.ckpt \
+  --channel_snr_db 0 \
+  --adjscc_weights ADJSCC/model/ffhq/adjscc_ffhq_awgn_tcn16_snrdb-10to20_bs16_lr0.0001.h5 \
+  --input_dir ../datasets/ffhq_val \
+  --output_dir wr_signal_inference_ffhq \
   --low_snr -10 \
   --high_snr 20 \
   --device cuda:0 \
