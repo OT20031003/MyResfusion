@@ -10,7 +10,11 @@ from torch.utils.data import DataLoader
 from adjscc_signal_data_wr import MINIMUM_CHANNEL_SNR_DB, WRSignalDataset
 from model import WRADJSCCSignalResfusion
 from model.denoising_module import RDDM_Unet
-from train_adjscc_signal_resfusion import ensure_cache, parser as base_parser
+from train_adjscc_signal_resfusion import (
+    ValidationImagePSNR,
+    ensure_cache,
+    parser as base_parser,
+)
 from variance_scheduler import CosineProScheduler, LinearProScheduler
 
 def main(args):
@@ -45,14 +49,21 @@ def main(args):
     args.signal_domain = "raw_power_normalized_no_post_channel_normalization"
     model = WRADJSCCSignalResfusion(denoising_module=denoiser, variance_scheduler=scheduler,
         **vars(args), n_channels=args.transmit_channel_num)
-    checkpoint = ModelCheckpoint(monitor="val_latent_MSE", mode="min",
-        filename="wr-best-{epoch:04d}-{val_latent_MSE:.6f}", save_top_k=1, save_last=True,
+    checkpoint = ModelCheckpoint(monitor="val_image_LPIPS", mode="min",
+        filename="wr-best-{epoch:04d}-{val_image_LPIPS:.6f}", save_top_k=1, save_last=True,
         every_n_epochs=args.check_val_every_n_epoch)
+    image_metrics = ValidationImagePSNR(
+        args.adjscc_weights, args.transmit_channel_num, args.image_size,
+        args.high_snr, latent_min=0.0, latent_max=1.0, seed=args.seed,
+        prediction_key="prediction_raw", prediction_is_raw=True,
+        power_normalize=False,
+        print_metrics_table=True,
+    )
     trainer = Trainer(accelerator=args.accelerator, devices=args.devices,
         max_epochs=args.epochs, accumulate_grad_batches=args.accum_iter,
         default_root_dir=args.log_dir, check_val_every_n_epoch=args.check_val_every_n_epoch,
         gradient_clip_val=args.gradient_clip, precision=args.precision,
-        callbacks=[checkpoint, LearningRateMonitor(logging_interval="epoch")],
+        callbacks=[image_metrics, checkpoint, LearningRateMonitor(logging_interval="epoch")],
         log_every_n_steps=1, deterministic="warn",
         strategy="auto" if args.devices == 1 else "ddp")
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader,

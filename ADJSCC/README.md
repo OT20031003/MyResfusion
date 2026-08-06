@@ -266,6 +266,33 @@ python adjscc_raindrop.py train \
 
 VRAM不足の場合は`--batch_size 2`または`--batch_size 1`へ下げます。データ読み込みがボトルネックになる場合は、`../datasets`をWSLのLinux filesystemへ置くと`/mnt/d`より高速になる場合があります。
 
+### FFHQ `ffhq_train_70k`による学習
+
+`adjscc_ffhq.py`は、リポジトリルートから見て`../datasets/ffhq_train_70k/*.png`にある70,000枚の画像を直接読み込みます。画像は既に`256×256`であることを前提とし、リサイズ、クロップ、左右反転などの画像処理は行いません。seed固定で1,000枚をvalidationとしてhold-outし、残り69,000枚を各epochでちょうど1回ずつ学習に使用します。学習画像の順序とAWGNのSNRだけを毎epoch生成し直します。
+
+リポジトリルートで次のコマンドを実行します。
+
+```bash
+python ADJSCC/adjscc_ffhq.py \
+  --data_dir ../datasets/ffhq_train_70k \
+  --channel_type awgn \
+  --snr_low_train=-10 \
+  --snr_up_train=20 \
+  --batch_size 16 \
+  --val_batch_size 16 \
+  --val_count 1000 \
+  --val_snr_db=0 \
+  --num_parallel_calls 4 \
+  --prefetch_batches 1 \
+  --epochs 500 \
+  --learning_rate 0.0001 \
+  --transmit_channel_num 16 \
+  --model_dir ADJSCC/model/ffhq \
+  --loss_dir ADJSCC/loss/ffhq
+```
+
+`drop_remainder=False`なので、画像数がbatch sizeで割り切れない設定でも末尾の画像は破棄されません。PNGが`256×256×3`でない場合はエラーになります。validationではhold-out画像を加工せず、`--val_snr_db`の固定SNRでPSNRを測定します。validation画像はメモリへcacheせず、batchごとに逐次読み込みます。checkpointは`val_psnr`が最大になったときに`.h5`形式で更新されます。GPUメモリが不足する場合は`--batch_size`と`--val_batch_size`を下げてください。
+
 ### 6. 保存される成果物
 
 推奨ファイル名は、実験条件が分かるように次の形式にします。

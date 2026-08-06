@@ -71,8 +71,13 @@ class WRADJSCCSignalResfusion(ADJSCCSignalResfusion):
         generated = self.infer_from_received(batch["y"], batch["sigma"], batch["channel_snr_db"])
         mse = F.mse_loss(generated, batch["z_high"])
         self.log("val_loss", loss, on_epoch=True, sync_dist=True)
-        self.log("val_latent_MSE", mse, on_epoch=True, prog_bar=True, sync_dist=True)
-        return {"prediction_raw": generated.detach().cpu(), "target_image": batch["image"].cpu()}
+        self.log("val_latent_MSE", mse, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.log("val_channel_snr_db", batch["channel_snr_db"].float().mean(),
+                 on_step=False, on_epoch=True, prog_bar=False, logger=True,
+                 sync_dist=True, batch_size=len(batch["z_high"]))
+        return {"prediction_raw": generated.detach().cpu(),
+                "target_image": batch["image"].cpu(),
+                "val_loss": loss.detach().cpu(), "val_latent_MSE": mse.detach().cpu()}
 
     def infer_from_received(self, y, sigma, channel_snr_db, stochastic=True):
         start_alpha_bar = self.alphas_hat[self.T_acc - 1].to(y)

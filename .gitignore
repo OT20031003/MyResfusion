@@ -15,3 +15,4 @@ standard_received_y_cache
 standard_received_y_eval
 standard_received_y_train
 my_awgn_resfusion_eval
+ADJSCC/model/*

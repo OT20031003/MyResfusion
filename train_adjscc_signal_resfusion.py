@@ -28,11 +28,14 @@ from variance_scheduler import CosineProScheduler, LinearProScheduler
 
 
 class ValidationImagePSNR(Callback):
-    """validation latentをADJSCC Decoderで画像化し、平均画像PSNRを記録する。"""
+    """validation latentを画像化し、画像空間の平均PSNR/LPIPSを記録する。"""
 
     def __init__(self, weights: str, channels: int, image_size: int,
                  high_snr: float, latent_min: float, latent_max: float,
-                 seed: int) -> None:
+                 seed: int, prediction_key: str = "prediction_model",
+                 prediction_is_raw: bool = False,
+                 power_normalize: bool = True,
+                 print_metrics_table: bool = False) -> None:
         super().__init__()
         self.weights = weights
         self.channels = channels
@@ -41,21 +44,43 @@ class ValidationImagePSNR(Callback):
         self.latent_min = latent_min
         self.latent_scale = latent_max - latent_min
         self.seed = seed
+        self.prediction_key = prediction_key
+        self.prediction_is_raw = prediction_is_raw
+        self.power_normalize = power_normalize
+        self.print_metrics_table = print_metrics_table
         self._predictions = []
         self._targets = []
+        self._channel_snrs = []
+        self._val_losses = []
+        self._latent_mses = []
         self._codec = None
         self._lpips = None
 
     def on_validation_epoch_start(self, trainer, pl_module) -> None:
         self._predictions.clear()
         self._targets.clear()
+        self._channel_snrs.clear()
+        self._val_losses.clear()
+        self._latent_mses.clear()
 
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
     ) -> None:
         if outputs is not None:
-            self._predictions.append(outputs["prediction_model"])
+            self._predictions.append(outputs[self.prediction_key])
             self._targets.append(outputs["target_image"])
+            if self.print_metrics_table and isinstance(batch, dict) \
+                    and "channel_snr_db" in batch:
+                self._channel_snrs.append(
+                    batch["channel_snr_db"].detach().float().cpu().reshape(-1)
+                )
+                batch_size = len(batch["channel_snr_db"])
+                if "val_loss" in outputs:
+                    self._val_losses.append((float(outputs["val_loss"]), batch_size))
+                if "val_latent_MSE" in outputs:
+                    self._latent_mses.append(
+                        (float(outputs["val_latent_MSE"]), batch_size)
+                    )
 
     def on_validation_epoch_end(self, trainer, pl_module) -> None:
         if not self._predictions:
@@ -67,14 +92,14 @@ class ValidationImagePSNR(Callback):
                 self.weights, self.channels, self.image_size,
                 seed=self.seed, device="/CPU:0",
             )
-        prediction_model = torch.cat(self._predictions).float()
+        prediction = torch.cat(self._predictions).float()
         target = torch.cat(self._targets).numpy().astype(np.float64)
-        prediction_raw = (
-            (prediction_model + 1.0) / 2.0 * self.latent_scale + self.latent_min
+        prediction_raw = prediction if self.prediction_is_raw else (
+            (prediction + 1.0) / 2.0 * self.latent_scale + self.latent_min
         )
         prediction_nhwc = prediction_raw.permute(0, 2, 3, 1).numpy()
-        # Decoderへ渡す前に、学習targetと同じ送信電力制約へ戻す。
-        prediction_nhwc = self._codec.power_normalize(prediction_nhwc)
+        if self.power_normalize:
+            prediction_nhwc = self._codec.power_normalize(prediction_nhwc)
         decoded = self._codec.decode(prediction_nhwc, self.high_snr).astype(np.float64)
         mse_per_image = np.mean((decoded - target) ** 2, axis=(1, 2, 3))
         psnr_per_image = 10.0 * np.log10(255.0 ** 2 / np.maximum(mse_per_image, 1e-12))
@@ -97,12 +122,35 @@ class ValidationImagePSNR(Callback):
         self._lpips.reset()
         pl_module.log(
             "val_image_PSNR", image_psnr, on_step=False, on_epoch=True,
-            prog_bar=True, logger=True, sync_dist=True,
+            prog_bar=not self.print_metrics_table, logger=True, sync_dist=True,
         )
         pl_module.log(
             "val_image_LPIPS", image_lpips, on_step=False, on_epoch=True,
             prog_bar=False, logger=True, sync_dist=True,
         )
+        if self.print_metrics_table:
+            mean_snr = (
+                float(torch.cat(self._channel_snrs).mean())
+                if self._channel_snrs else float("nan")
+            )
+            mean_val_loss = sum(v * n for v, n in self._val_losses) / sum(
+                n for _, n in self._val_losses
+            )
+            mean_latent_mse = sum(v * n for v, n in self._latent_mses) / sum(
+                n for _, n in self._latent_mses
+            )
+            print(
+                f"\nValidation metrics (epoch {trainer.current_epoch})\n"
+                "+--------------------+------------+\n"
+                "| metric             |      value |\n"
+                "+--------------------+------------+\n"
+                f"| loss               | {mean_val_loss:10.6f} |\n"
+                f"| latent MSE         | {mean_latent_mse:10.6f} |\n"
+                f"| image PSNR (dB)    | {float(image_psnr):10.4f} |\n"
+                f"| image LPIPS        | {float(image_lpips):10.6f} |\n"
+                f"| channel SNR (dB)   | {mean_snr:10.4f} |\n"
+                "+--------------------+------------+"
+            )
 
 
 def cache_expectation(args, image_dir: Path, random_crop: bool, crops: int) -> dict:
