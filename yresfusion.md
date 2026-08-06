@@ -66,7 +66,7 @@ python train_adjscc_signal_resfusion_standard.py \
   --precision 32 \
   --seed 2024 \
   --noise_schedule LinearPro \
-  --T 12 \
+  --T 30 \
   --mode epsilon \
   --loss_type L2 \
   --optimizer_type AdamW \
@@ -100,7 +100,7 @@ python train_adjscc_signal_resfusion_standard.py \
 
 ```bash
 python test_awgn_adjscc_signal_resfusion_standard.py \
-  --resfusion_ckpt standard_received_y_train/lightning_logs/version_1/checkpoints/last.ckpt \
+  --resfusion_ckpt standard_received_y_train/lightning_logs/version_2/checkpoints/last.ckpt \
   --channel_snr_db -4.0 \
   --adjscc_weights ADJSCC/model/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs8_lr0.0001.h5 \
   --input_dir ../datasets/Raindrop/test_a/gt \

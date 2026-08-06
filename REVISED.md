@@ -23,7 +23,7 @@
 
 ```bash
 python train_adjscc_signal_resfusion_wr.py \
-  --adjscc_weights /path/to/adjscc.h5 \
+  --adjscc_weights ADJSCC/model/adjscc_raindrop_awgn_tcn16_snrdb-10to20_bs8_lr0.0001.h5 \
   --data_dir ../datasets/Raindrop \
   --channel-snr-min-db -4.0 \
   --channel-snr-max-db 20.0 \

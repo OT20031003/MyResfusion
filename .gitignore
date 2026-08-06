@@ -1,7 +1,7 @@
 resfusion_restore_train/*
 resfusion_generate_train/*
 datasets/*
-
+wr_signal*
 *.pyc
 resfusion_restore_test
 ADJSCC/eval/*
